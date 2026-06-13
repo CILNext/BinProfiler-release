@@ -58,21 +58,22 @@ block trace。最基本的调用形式：
 
 | 范围 | 代表类别 | Trace probe | Elfgen | 当前状态 |
 | --- | --- | --- | --- | --- |
-| 标量普通 ld/st | `ScalarRegMem` | 支持 | 支持 | 稳定 |
-| 标量 pair | `PairRegMem + Scalar` | 支持 | 支持 | 稳定 |
-| 标量 literal load | `LoadLiteral` | 支持 | 支持 | 稳定 |
-| 标量 ordered / RCPC | `LDAR/STLR/LDLAR/STLLR/LDAPR/LDAPUR/STLUR` | 支持 | 支持 | 稳定 |
-| 标量 exclusive | `Exclusive` | 支持 | 支持 | 稳定 |
-| 标量 LSE atomic | `AtomicRmw` | 支持 | 支持 | 稳定 |
-| NEON/FP 单寄存器 | `VectorRegMem` | 支持 | 支持 | 稳定 |
-| NEON/FP pair | `PairRegMem + Vector` | 支持 | 支持 | 稳定 |
-| NEON/FP literal load | `LoadLiteral + Vector` | 支持 | 支持 | 稳定 |
-| NEON full-register structure | `SimdStructure` | 支持 | 支持 | 稳定 |
-| pair ordered / pair RCPC | `STILP/LDIAPP/STLP/LDAP/LDAPP` | **不支持** | **不支持** | 无支持计划 |
-| NEON/FP RCPC | `LDAP1`、SIMD/FP `LDAPUR/STLUR` | **不支持** | **不支持** | 无支持计划 |
-| SVE/SME memory | `SveMem` | **不支持** | **不支持** | 下一步支持 |
-| PRFM | `Prefetch` | 支持 | 支持 | 未测试 |
-| MOPS | 专用 memory 流水指令 | **不支持** | **不支持** | 无支持计划 |
+| 标量普通 ld/st | `ScalarRegMem` | 支持 | 支持 | 稳定 
+| 标量 pair | `PairRegMem + Scalar` | 支持 | 支持 | 稳定 
+| 标量 literal load | `LoadLiteral` | 支持 | 支持 | 稳定 
+| 标量 ordered / RCPC | `LDAR/STLR/LDLAR/STLLR/LDAPR/LDAPUR/STLUR` | 支持 | 支持 | 稳定 
+| 标量 exclusive | `Exclusive` | 支持 | 支持 | 稳定 
+| 标量 LSE atomic | `AtomicRmw` | 支持 | 支持 | 稳定 
+| NEON/FP 单寄存器 | `VectorRegMem` | 支持 | 支持 | 稳定 
+| NEON/FP pair | `PairRegMem + Vector` | 支持 | 支持 | 稳定 
+| NEON/FP literal load | `LoadLiteral + Vector` | 支持 | 支持 | 稳定 
+| NEON full-register structure | `SimdStructure` | 支持 | 支持 | 稳定 
+| pair ordered / pair RCPC | `STILP/LDIAPP/STLP/LDAP/LDAPP` | 不支持 | 不支持 | 无支持计划 
+| NEON/FP RCPC | `LDAP1`、SIMD/FP `LDAPUR/STLUR` | 不支持 | 不支持 | 无支持计划 
+| SVE memory | `ldr/str z`、`ldr/str p`、predicated contiguous `ld1/st1/ldnt1/stnt1`、replicate `ld1r* / ld1rq*`、contiguous tuple `ld1..ld4/st1..st4`（含 `q` tuple）、`ld1/st1 mz`、indexed-address gather/scatter、`ldff1* / ldnf1*` | 支持 | 支持 | 未充分验证 
+| SVE 未支持 | `ldnt1b/h/w/d mz`、`stnt1b/h/w/d mz`、`ld1sb/sh/sw`、`ld1rob/roh/row/rod`、`ld1rsb/rsh/rsw`、其余尚未接入的 `ai_* / ar_* / bz_*` 地址形态 | 不支持 | 不支持 | 按需支持 
+| PRFM | `Prefetch` | 不生成 payload | 不适用 | 按设计跳过
+| MOPS | 专用 memory 流水指令 | 不支持 | 不支持 | 无支持计划
 
 ### 权限与运行限制
 
@@ -86,6 +87,9 @@ attach 成功。
 - 目标架构为 AArch64
 - 运行环境允许注入动态库
 
+### SVE的Vector Length说明
+
+在抓取Trace时，可以允许每一个ld st指令都有不同的Vector Length，但在制作elf时，要求整个elf只有一个固定的Vector Length。这主要是因为制作出来的elf不会包含syscall，是纯用户态指令流，所以无法更改vector length。
 
 ### 常用选项：
 
@@ -101,6 +105,7 @@ attach 成功。
 - `--emit-trace`：生成二进制trace文件，格式见BPTF说明
 - `--emit-elf`：在trace抓取成功后自动生成 ELF
 - `--merge-elf`: 生成的elf可能会有超限的segment，利用该选项降低segment数量，使elf可在真机上运行
+- `--to39bit`: 利用48bit VA地址下抓取的trace生成运行在39bit VA环境的切片，用于在模拟器上运行（**开发中的实验特性**，请勿开启）
 
 ### 常见用法：
 
