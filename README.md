@@ -105,7 +105,7 @@ attach 成功。
 - `--emit-trace`：生成二进制trace文件，格式见BPTF说明
 - `--emit-elf`：在trace抓取成功后自动生成 ELF
 - `--merge-elf`: 生成的elf可能会有超限的segment，利用该选项降低segment数量，使elf可在真机上运行
-- `--to39bit`: 利用48bit VA地址下抓取的trace生成运行在39bit VA环境的切片，用于在模拟器上运行（**开发中的实验特性**，请勿开启）
+- `--to39bit`: 利用48bit VA地址下抓取的trace生成运行在39bit VA环境的切片，用于在模拟器上运行（**开发中的实验特性**）
 
 ### 常见用法：
 
@@ -164,6 +164,7 @@ attach 成功。
 - `--emit-trace`：在生成 ELF 的同时导出展开后的 `.bptf`
 - `--ignore-end-pc`：忽略 trace 里的 `end-pc` 标记，只按默认回退策略选择结束位置（**强烈不建议使用**）
 - `--merge-elf`：降低最终 ELF 的 segment 数量，使其更容易在真实环境加载运行
+- `--to39bit`：同时生成普通 48-bit VA 切片 ELF 和面向 39-bit VA 环境的切片 ELF（**开发中的实验特性**）
 
 ### 常见用法：
 
@@ -185,6 +186,38 @@ attach 成功。
   --merge-elf
 ```
 
+### 39-bit VA 切片功能
+
+`--to39bit` 用于把在 48-bit VA Linux 环境下抓取的 `.bpraw` trace 投影成可在
+39-bit VA 环境中运行的切片 ELF，主要用于需要限制虚拟地址宽度的模拟器回放场景。
+开启后，`elfgen` 会对 trace 中的 PC、SP、内存访问地址以及可识别的指针来源做
+39-bit 地址投影；同时会保留一份普通 48-bit VA baseline ELF，并生成 39-bit
+版本的 ELF。
+
+可以在 trace 后自动生成 48-bit 和 39-bit 两份 ELF：
+
+```sh
+./binprofiler --output-dir /tmp/binprofiler-39bit trace 12345 \
+  --trigger-pc 0x401000 \
+  --end-pc 0x4019f0 \
+  --emit-elf \
+  --to39bit
+```
+
+也可以对已有 `.bpraw` 单独执行 `elfgen`：
+
+```sh
+./binprofiler --output-dir /tmp/binprofiler-39bit elfgen \
+  ./out/binprofiler-trace-12345-12345.bpraw \
+  --to39bit
+```
+
+未开启 `--to39bit` 时，默认生成普通 48-bit VA 切片；开启后输出文件名会带有
+`-48bit.elf` 和 `-39bit.elf` 后缀，分别对应普通 baseline 和 39-bit 版本。
+该功能仍属于实验特性；遇到回放差异时，优先用同次生成的普通 48-bit ELF 确认
+trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额外留下用于验证的
+`-39bit-probe_map.txt`、`-39bit-tagprobe-*_map.txt` 等中间 map 文件。
+
 ## 输出文件
 
 当前自动生成的产物文件名规则如下：
@@ -192,12 +225,15 @@ attach 成功。
 ```text
 <output-dir>/binprofiler-trace-<pid>-<tid>.bpraw
 <output-dir>/binprofiler-trace-<pid>-<tid>.bptf
-<output-dir>/binprofiler-trace-<pid>-<tid>.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>_map.txt
+<output-dir>/binprofiler-trace-<pid>-<tid>-48bit.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-48bit_map.txt
 <output-dir>/host.log
 ```
 
 是否生成 `.bptf` 和 `.elf` 取决于是否启用了 `--emit-trace` 和 `--emit-elf`。
+未开启 `--to39bit` 时只生成 `-48bit.elf`；开启 `--to39bit` 时会同时生成
+`-48bit.elf` 和 `-39bit.elf`。普通 48-bit ELF 会生成对应的 `_map.txt` 文件。
 
 ## BPTF Trace 格式
 
