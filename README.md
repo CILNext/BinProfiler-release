@@ -103,7 +103,8 @@ attach 成功。
 - `--trace-context-neon`: 记录NEON/FP寄存器的初始值，默认开启，只有在确定目标程序只有标量指令的情况下才可以关闭
 - `--trace-jit`：用于存在self-modifying行为的目标程序，比如Python程序（未严格测试）
 - `--emit-trace`：生成二进制trace文件，格式见BPTF说明
-- `--emit-elf`：在trace抓取成功后自动生成 ELF
+- `--emit-elf`：在trace抓取成功后自动生成 ELF；普通 48-bit 路径会同时生成
+  `-48bit-orr.elf` 和 `-48bit-brk.elf` 两个 finish terminator 变体
 - `--merge-elf`: 生成的elf可能会有超限的segment，利用该选项降低segment数量，使elf可在真机上运行
 - `--to39bit`: 利用48bit VA地址下抓取的trace生成运行在39bit VA环境的切片，用于在模拟器上运行（**开发中的实验特性**）
 
@@ -212,8 +213,11 @@ attach 成功。
   --to39bit
 ```
 
-未开启 `--to39bit` 时，默认生成普通 48-bit VA 切片；开启后输出文件名会带有
-`-48bit.elf` 和 `-39bit.elf` 后缀，分别对应普通 baseline 和 39-bit 版本。
+未开启 `--to39bit` 时，默认生成普通 48-bit VA 切片，并输出
+`-48bit-orr.elf` 和 `-48bit-brk.elf` 两个变体；开启后还会额外输出
+`-39bit-orr.elf`、`-39bit-brk.elf` 以及对应的 map。`-orr.elf` 在
+finish site 使用单条 `orr x4, x4, x4` marker，`-brk.elf` 使用单条
+`brk #0` 作为本地执行/runner 的完成信号。
 该功能仍属于实验特性；遇到回放差异时，优先用同次生成的普通 48-bit ELF 确认
 trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额外留下用于验证的
 `-39bit-probe_map.txt`、`-39bit-tagprobe-*_map.txt` 等中间 map 文件。
@@ -225,15 +229,21 @@ trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额�
 ```text
 <output-dir>/binprofiler-trace-<pid>-<tid>.bpraw
 <output-dir>/binprofiler-trace-<pid>-<tid>.bptf
-<output-dir>/binprofiler-trace-<pid>-<tid>-48bit.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-48bit_map.txt
+<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-orr.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-brk.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-orr_map.txt
+<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-brk_map.txt
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-orr.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-brk.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-orr_map.txt
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-brk_map.txt
 <output-dir>/host.log
 ```
 
 是否生成 `.bptf` 和 `.elf` 取决于是否启用了 `--emit-trace` 和 `--emit-elf`。
-未开启 `--to39bit` 时只生成 `-48bit.elf`；开启 `--to39bit` 时会同时生成
-`-48bit.elf` 和 `-39bit.elf`。普通 48-bit ELF 会生成对应的 `_map.txt` 文件。
+未开启 `--to39bit` 时只生成 `-48bit-orr.elf` 和 `-48bit-brk.elf`；
+开启 `--to39bit` 时还会生成 `-39bit-orr.elf` 和 `-39bit-brk.elf`。
+各 ELF 会生成对应的 `_map.txt` 文件。
 
 ## BPTF Trace 格式
 
