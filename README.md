@@ -21,10 +21,7 @@ Linux AArch64 场景下的trace抓取和切片制作功能。
 
 ## 获取二进制
 
-从本仓的 GitHub Releases 页面下载对应平台的二进制包：
-
-下载后解压，保证 `binprofiler` 和 `libbinprofiler-agent.so` 位于同一目录，或在
-运行时通过 `--agent` 显式指定 agent 路径。
+从本仓的 GitHub Releases 页面下载对应平台的二进制包：`binprofiler` 和 `libbinprofiler-agent.so`
 
 ## 运行原理
 
@@ -33,8 +30,7 @@ trace 请求；agent 常驻在目标进程内，执行具体采集动作并返�
 
 ## Trace 功能说明
 
-当前 `trace` 子命令支持把 agent 注入到指定进程，并在指定线程上抓取 basic
-block trace。最基本的调用形式：
+当前 `trace` 子命令支持把 agent 注入到指定进程，并在指定线程上抓取可制作成可执行文件ELF的指令流的trace。最基本的调用形式：
 
 ```sh
 ./binprofiler [--output-dir <dir>] trace <pid> [trace-options]
@@ -58,22 +54,22 @@ block trace。最基本的调用形式：
 
 | 范围 | 代表类别 | Trace probe | Elfgen | 当前状态 |
 | --- | --- | --- | --- | --- |
-| 标量普通 ld/st | `ScalarRegMem` | 支持 | 支持 | 稳定 
-| 标量 pair | `PairRegMem + Scalar` | 支持 | 支持 | 稳定 
-| 标量 literal load | `LoadLiteral` | 支持 | 支持 | 稳定 
-| 标量 ordered / RCPC | `LDAR/STLR/LDLAR/STLLR/LDAPR/LDAPUR/STLUR` | 支持 | 支持 | 稳定 
-| 标量 exclusive | `Exclusive` | 支持 | 支持 | 稳定 
-| 标量 LSE atomic | `AtomicRmw` | 支持 | 支持 | 稳定 
-| NEON/FP 单寄存器 | `VectorRegMem` | 支持 | 支持 | 稳定 
-| NEON/FP pair | `PairRegMem + Vector` | 支持 | 支持 | 稳定 
-| NEON/FP literal load | `LoadLiteral + Vector` | 支持 | 支持 | 稳定 
-| NEON full-register structure | `SimdStructure` | 支持 | 支持 | 稳定 
-| pair ordered / pair RCPC | `STILP/LDIAPP/STLP/LDAP/LDAPP` | 不支持 | 不支持 | 无支持计划 
-| NEON/FP RCPC | `LDAP1`、SIMD/FP `LDAPUR/STLUR` | 不支持 | 不支持 | 无支持计划 
-| SVE memory | `ldr/str z`、`ldr/str p`、predicated contiguous `ld1/st1/ldnt1/stnt1`、replicate `ld1r* / ld1rq*`、contiguous tuple `ld1..ld4/st1..st4`（含 `q` tuple）、`ld1/st1 mz`、indexed-address gather/scatter、`ldff1* / ldnf1*` | 支持 | 支持 | 未充分验证 
-| SVE 未支持 | `ldnt1b/h/w/d mz`、`stnt1b/h/w/d mz`、`ld1sb/sh/sw`、`ld1rob/roh/row/rod`、`ld1rsb/rsh/rsw`、其余尚未接入的 `ai_* / ar_* / bz_*` 地址形态 | 不支持 | 不支持 | 按需支持 
-| PRFM | `Prefetch` | 不生成 payload | 不适用 | 按设计跳过
-| MOPS | 专用 memory 流水指令 | 不支持 | 不支持 | 无支持计划
+| 标量普通 ld/st | 普通单寄存器 load/store | 支持 | 支持 | 稳定 |
+| 标量 pair | `ldp/stp`、`ldnp/stnp` | 支持 | 支持 | 稳定 |
+| 标量 literal load | literal `ldr` | 支持 | 支持 | 稳定 |
+| 标量 ordered / RCPC | acquire/release、RCPC 单寄存器 | 支持 | 支持 | 稳定 |
+| 标量 exclusive | exclusive load/store | 支持 | 支持 | 稳定 |
+| 标量 LSE atomic | LSE atomic RMW / CAS | 支持 | 支持 | 稳定 |
+| NEON/FP 单寄存器 | `B/H/S/D/Q` 单寄存器 load/store | 支持 | 支持 | 稳定 |
+| NEON/FP pair | `S/D/Q` pair load/store | 支持 | 支持 | 稳定 |
+| NEON/FP literal load | `S/D/Q` literal load | 支持 | 支持 | 稳定 |
+| NEON full-register structure | full-register `ld1..ld4/st1..st4` | 支持 | 支持 | 稳定 |
+| pair ordered / pair RCPC | ordered / RCPC pair | 不支持 | 不支持 | 无支持计划 |
+| NEON/FP RCPC | SIMD/FP RCPC load/store | 不支持 | 不支持 | 无支持计划 |
+| SVE memory | SVE contiguous、tuple、gather/scatter、fault-first 等 | 支持 | 支持 | 未充分验证 |
+| SVE 未支持 | 部分 SVE 地址形态与少数剩余指令族 | 不支持 | 不支持 | 按需支持 |
+| PRFM | prefetch hint | 支持 | 支持 | 稳定 |
+| MOPS | 专用 memory 流水指令 | 不支持 | 不支持 | 无支持计划 |
 
 ### 权限与运行限制
 
@@ -85,7 +81,13 @@ attach 成功。
 
 - 当前用户对目标进程具备 attach 权限
 - 目标架构为 AArch64
-- 运行环境允许注入动态库
+- 运行环境允许通过 `ptrace` 注入动态库
+  - 临时放宽限制：`echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`
+  - 持久配置：在 `/etc/sysctl.d/10-ptrace.conf` 中写入
+    `kernel.yama.ptrace_scope = 0`，然后重新加载 sysctl 配置
+
+生产环境或共享机器上不建议长期放宽 `ptrace_scope`；如果只做一次采集，优先使用临时配置，
+采集结束后再恢复原值。
 
 ### SVE的Vector Length说明
 
@@ -132,7 +134,7 @@ attach 成功。
   --emit-trace \
   --trigger-pc 0x401000
 
-# 6. trace 成功后自动生成 ELF，在trace内最后一个end-pc处计结束ELF的执行，额外导出 trace
+# 6. trace 成功后自动生成 ELF，抓5000w指令（未给参数时的默认值），并优先使用给定的end-pc作为trace结束点，额外导出 trace
 ./binprofiler --output-dir /tmp/binprofiler-replay trace 12345 \
   --trigger-pc 0x401000 \
   --end-pc 0x4019f0 \
@@ -178,22 +180,160 @@ attach 成功。
   ./out/binprofiler-trace-12345-12345.bpraw \
   --emit-trace
 
-# 3. 忽略 trace 里的 end-pc 标记
-./binprofiler elfgen ./out/binprofiler-trace-12345-12345.bpraw \
-  --ignore-end-pc
-
-# 4. 压低 segment 数量，使生成的 ELF 更容易在真机运行
+# 3. 压低 segment 数量，使生成的 ELF 在真机运行
 ./binprofiler elfgen ./out/binprofiler-trace-12345-12345.bpraw \
   --merge-elf
 ```
+## trigger pc和end pc的设置方法
 
-### 39-bit VA 切片功能
+`--trigger-pc` 和 `--end-pc` 都支持两种写法：
 
-`--to39bit` 用于把在 48-bit VA Linux 环境下抓取的 `.bpraw` trace 投影成可在
-39-bit VA 环境中运行的切片 ELF，主要用于需要限制虚拟地址宽度的模拟器回放场景。
-开启后，`elfgen` 会对 trace 中的 PC、SP、内存访问地址以及可识别的指针来源做
-39-bit 地址投影；同时会保留一份普通 48-bit VA baseline ELF，并生成 39-bit
-版本的 ELF。
+```text
+0xADDR
+MODULE:0xADDR
+```
+
+含义分别是：
+
+- `0xADDR`：动态运行时 PC。这个地址必须是目标进程当前运行时的真实虚拟地址。
+- `MODULE:0xADDR`：模块内静态 PC。`0xADDR` 是 `objdump` / `readelf` 看到的
+  ELF 静态地址，`MODULE` 用来指定这个地址属于哪个已加载模块。
+
+推荐优先使用 `MODULE:0xADDR`，尤其是目标程序或动态库启用了 PIE/ASLR 时。这样不需要手动
+计算运行时基址，BinProfiler 会在目标进程内读取 `/proc/self/maps` 和 ELF program header，
+把静态 PC 转成实际动态 PC。trace 完成时，`host.log` 会打印解析后的实际地址，例如：
+
+```text
+trace finished: actual trigger pc=0xaaaad77f08d8 actual end pc=0xaaaad77f08fc instructions=3256
+trace stats: catalog=35 dynamic=594 dropped_catalog=0 dropped_dynamic=0 output_bytes=70672 cleanup_pending=true
+```
+
+### 使用动态运行时 PC
+
+如果你已经知道目标进程里的实际 PC，可以直接传裸地址：
+
+```sh
+./binprofiler trace <pid> \
+  --trigger-pc 0x7f0012345678 \
+  --end-pc 0x7f00123489ab \
+  --emit-elf
+```
+
+注意：裸 `0xADDR` 永远被当作动态运行时 PC，不会自动按静态 PC 解析。
+
+### 使用 objdump 静态 PC
+
+通常先对目标二进制或动态库做反汇编，找到想要的静态 PC：
+
+```sh
+objdump -d /path/to/demo_app | grep -n '<target_function>'
+objdump -d /usr/lib/libfoo.so | grep -n '<target_function>'
+```
+
+假设得到：
+
+```text
+00000000000008d8 <trigger_func>:
+00000000000008fc <end_func>:
+```
+
+`MODULE` 一般可以直接写这个文件的 basename。比如 `/path/to/demo_app` 通常写成
+`demo_app`，`/usr/lib/libfoo.so` 通常写成 `libfoo.so`：
+
+```sh
+./binprofiler trace <pid> \
+  --trigger-pc demo_app:0x8d8 \
+  --end-pc demo_app:0x8fc \
+  --emit-elf
+```
+
+如果 PC 来自动态库：
+
+```sh
+./binprofiler trace <pid> \
+  --trigger-pc libfoo.so:0x1234 \
+  --end-pc libfoo.so:0x4568 \
+  --emit-elf
+```
+
+如果不确定模块在目标进程里叫什么，或者 basename 匹配失败/匹配到多个模块，可以查看
+`/proc/<pid>/maps` 里的可执行映射来确认实际 pathname：
+
+```sh
+cat /proc/<pid>/maps | awk '$2 ~ /x/ { print }'
+```
+
+示例输出：
+
+```text
+aaaaddaa0000-aaaaddaa1000 r-xp 00000000 00:32 6730 /tmp/demo_app
+ffff9a100000-ffff9a200000 r-xp 00000000 00:32 9001 /usr/lib/libfoo.so
+```
+
+`MODULE` 的匹配规则：
+
+- 可以写 maps 里的完整路径，例如 `/usr/lib/libfoo.so:0x1234`
+- 可以写 basename，例如 `libfoo.so:0x1234`
+- 可以写路径后缀，例如 `aarch64-linux-gnu/libfoo.so:0x1234`
+- 主程序没有 `main:` / `exe:` 这类特殊别名；也按 maps 里的路径或文件名写
+
+如果 basename 匹配到多个模块，BinProfiler 会报错。此时改用更完整的路径即可。
+
+### trigger pc和end pc可以来自不同模块
+
+`--trigger-pc` 和 `--end-pc` 是分别解析的，所以可以一个来自主程序，一个来自动态库：
+
+```sh
+./binprofiler trace <pid> \
+  --trigger-pc demo_app:0x8d8 \
+  --end-pc libfoo.so:0x4568 \
+  --emit-elf
+```
+
+### 常见注意事项
+
+- 如果使用 `MODULE:0xADDR`，`MODULE` 必须能在目标进程 maps 中唯一匹配。
+- 如果使用裸 `0xADDR`，需要自己保证它是动态运行时 PC。
+- 不要把 `objdump` 里看到的小地址直接写成裸地址，例如 `--trigger-pc 0x8d8`。
+  这会被当作运行时地址 `0x8d8`，通常不会命中。
+- `end-pc` 只给 `elfgen` 提供优先结束位置，trace 本身仍然由
+  `--instruction-limit` 停止。
+
+## end pc的选择原则
+
+基于 trace 生成的 ELF 不是常规程序，没有天然的 `exit` 位置。BinProfiler 会在
+`end-pc` 对应的位置插入结束判断和补偿逻辑，用它作为 `elfgen` 优先选择的切片结束点。
+
+选择 `end-pc` 时最重要的原则是：**选择执行次数少、语义稳定、靠近目标片段结尾的指令**。
+不要把 `end-pc` 放在热点循环里。原因是同一个 `end-pc` 在 trace 中每执行一次，生成的
+ELF 就需要在对应位置检查一次“这次是否应该结束”。如果该 PC 在热点循环中被反复执行，
+结束检查和补偿代码会显著膨胀，生成的切片也更容易失真。
+
+建议优先选择：
+
+- 目标函数或目标阶段末尾附近的普通计算指令
+- 循环外、只执行少数几次的指令
+- 已经确认会在期望 trace 窗口之后执行到的位置
+
+避免选择：
+
+- 热循环内部的指令
+- `ret`、`br`、`b`、`bl`、条件跳转等控制流跳转指令
+- 可能在多个不相关路径中频繁命中的公共代码位置
+
+出于稳定性考虑，当前不允许把控制流跳转指令作为 `end-pc`。如果配置的 `end-pc`
+是跳转/调用/返回类指令，trace 启动时会直接报错；请改选它前后附近的非控制流指令。
+
+
+## 39-bit VA 切片功能
+
+`--to39bit` 用于把在 48-bit VA Linux 环境下抓取的 `.bpraw` trace 转换成可在
+39-bit VA 环境中运行的切片 ELF，主要面向需要限制虚拟地址宽度的模拟器回放场景。
+开启后，`elfgen` 会建立一套 48-bit 到 39-bit 的地址映射，并按这套映射重写 trace
+中的 PC、SP、内存访问地址以及可识别的指针来源；同时保留一份普通 48-bit VA baseline
+ELF，并额外生成 39-bit 版本的 ELF。需要注意的是，当前地址映射仍采用高位清零的
+投影方式；如果多个 48-bit 地址在清零后落到同一个 39-bit 地址，暂时还无法自动解决
+这种冲突。
 
 可以在 trace 后自动生成 48-bit 和 39-bit 两份 ELF：
 
@@ -244,6 +384,23 @@ trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额�
 未开启 `--to39bit` 时只生成 `-48bit-orr.elf` 和 `-48bit-brk.elf`；
 开启 `--to39bit` 时还会生成 `-39bit-orr.elf` 和 `-39bit-brk.elf`。
 各 ELF 会生成对应的 `_map.txt` 文件。
+
+各类文件的用途可以按下面理解：
+
+- `.bpraw`：原始 trace 文件，包含 catalog、动态执行记录、内存 payload 和必要的
+  context 信息，是后续 `elfgen` 的主要输入。
+- `.bptf`：从 `.bpraw` 展开的指令/内存事件流，便于做 diff、校验和离线分析；
+  只有开启 `--emit-trace` 时才会生成。该文件通常明显大于 `.bpraw`，不建议默认保存
+  或长期保留，只在需要排查问题、对比 trace 或做离线分析时生成。
+- `-orr.elf`：面向模拟器使用的切片 ELF。结束位置使用 `orr x4, x4, x4` 作为
+  finish marker，便于模拟器识别切片执行结束。
+- `-brk.elf`：面向真机或普通 Linux 环境运行的切片 ELF。结束位置使用 `brk #0`
+  触发 `SIGTRAP`，方便本地 runner 或调试器判断执行完成。
+- `_map.txt`：对应 ELF 的地址映射说明，用来区分原始业务代码、补偿代码、
+  finish stub、runtime 数据等区域。调试 replay 差异、统计补偿代码比例或在模拟器
+  中标注不同代码区域时，优先参考这个文件。
+- `host.log`：本次 trace / elfgen 的主机侧日志，包含参数、agent 注入过程、实际解析出的
+  trigger/end PC、输出文件路径和错误信息。
 
 ## BPTF Trace 格式
 
