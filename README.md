@@ -108,7 +108,8 @@ attach 成功。
 - `--emit-elf`：在trace抓取成功后自动生成 ELF；普通 48-bit 路径会同时生成
   `-48bit-orr.elf` 和 `-48bit-brk.elf` 两个 finish terminator 变体
 - `--merge-elf`: 生成的elf可能会有超限的segment，利用该选项降低segment数量，使elf可在真机上运行
-- `--to39bit`: 利用48bit VA地址下抓取的trace生成运行在39bit VA环境的切片，用于在模拟器上运行（**开发中的实验特性**）
+- `--to39bit`: 利用48bit VA地址下抓取的trace生成运行在39bit VA环境的切片，用于在模拟器上运行；会额外生成
+  `-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`（**开发中的实验特性**）
 
 ### 常见用法：
 
@@ -167,7 +168,8 @@ attach 成功。
 - `--emit-trace`：在生成 ELF 的同时导出展开后的 `.bptf`
 - `--ignore-end-pc`：忽略 trace 里的 `end-pc` 标记，只按默认回退策略选择结束位置（**强烈不建议使用**）
 - `--merge-elf`：降低最终 ELF 的 segment 数量，使其更容易在真实环境加载运行
-- `--to39bit`：同时生成普通 48-bit VA 切片 ELF 和面向 39-bit VA 环境的切片 ELF（**开发中的实验特性**）
+- `--to39bit`：同时生成普通 48-bit VA 切片 ELF 和面向 39-bit VA 环境的切片 ELF；
+  39-bit 输出包含 `-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`（**开发中的实验特性**）
 
 ### 常见用法：
 
@@ -305,9 +307,10 @@ ffff9a100000-ffff9a200000 r-xp 00000000 00:32 9001 /usr/lib/libfoo.so
 `end-pc` 对应的位置插入结束判断和补偿逻辑，用它作为 `elfgen` 优先选择的切片结束点。
 
 选择 `end-pc` 时最重要的原则是：**选择执行次数少、语义稳定、靠近目标片段结尾的指令**。
-不要把 `end-pc` 放在热点循环里。原因是同一个 `end-pc` 在 trace 中每执行一次，生成的
-ELF 就需要在对应位置检查一次“这次是否应该结束”。如果该 PC 在热点循环中被反复执行，
-结束检查和补偿代码会显著膨胀，生成的切片也更容易失真。
+不要把 `end-pc` 放在热点循环里；同一个 PC 命中越多，`elfgen` 需要区分和补偿的动态实例
+越多，`final_pc` 类别的代码开销也越高，生成的切片更容易失真。
+
+如果只是在模拟器上运行 39-bit nofinal 版本，可以依靠模拟指令数截断执行，不用指定 final PC。
 
 建议优先选择：
 
@@ -324,6 +327,38 @@ ELF 就需要在对应位置检查一次“这次是否应该结束”。如果�
 出于稳定性考虑，当前不允许把控制流跳转指令作为 `end-pc`。如果配置的 `end-pc`
 是跳转/调用/返回类指令，trace 启动时会直接报错；请改选它前后附近的非控制流指令。
 
+## 补偿代码
+
+`elfgen` 生成的 replay ELF 不是简单把 trace 里的指令顺序拷贝出来执行。对于初始寄存器状态、
+系统调用、系统寄存器读取、部分内存访问以及最终退出点，直接重放原始指令要么无法恢复 trace
+时的精确状态，要么会重新产生不该发生的外部副作用。补偿代码就是 `elfgen` 额外插入的 runtime
+stub：在 replay 过程中根据 `.bpraw` 里的上下文、内存事件和专用 payload 修正状态，然后跳回
+原始指令流或终止执行。
+
+补偿统计会出现在 `host.log` 里，例如：
+
+```text
+compensation instructions by category={initial=... svc=... mrs=... ldst=... final_pc=... exclusive=...}
+```
+
+这些字段表示补偿 stub 产生并实际计入的指令量，核心含义如下：
+
+| 项 | 目的 | 备注 |
+| --- | --- | --- |
+| `initial` | 在 replay ELF 入口从 trace 的 initial context 恢复初始寄存器状态，包括 PC、SP、通用寄存器、NZCV、FPCR/FPSR，以及可选的 NEON/SVE 上下文。 | 通常每个 replay ELF 有一个，是进入 trace 指令流前的状态基线。 |
+| `svc` | 避免重新执行可能产生外部副作用或上下文依赖的 `svc`；改为从 runtime table 选择该动态实例的 context snapshot，恢复后跳到记录的后继 PC。 | `restore_context` 也归入 `svc` 统计，用于部分 SVE first-fault / no-fault load 等需要完整上下文恢复的场景。 |
+| `mrs` | 避免重新读取 replay 时可能变化的系统寄存器；改为把 trace 捕获到的读值写回目标寄存器。 | 常见于计数器、状态寄存器等系统寄存器读值。 |
+| `ldst` | 修正普通 load/store、atomic/LSE、`DC ZVA` 等内存效果；在原始内存指令前后补齐 trace 中记录的内存值、地址、scratch 寄存器或 zero range。 | 这里对应常规 memory 补偿路径；如果 shadow memory 已能证明直接重放安全，可能不会生成对应补偿。 |
+| `exclusive` | 修正 exclusive load/store 序列，保证 store-exclusive 的成功/失败结果和必要的内存副作用与 trace 一致。 | 只有非零时才出现在 summary。 |
+| `final_pc` | 标记 replay 应该停止的动态位置。 | 普通 48bit 和 39bit 双 variant 共享同一份 final PC 选择；`-orr.elf` 和 `-brk.elf` 只是使用不同的结束信号。39-bit nofinal 版本不插入这类结束点补偿代码。 |
+| `cond_guard` | 在 39bit VA 管线中强制采用 trace 记录的条件分支方向和后继 PC，避免 48bit 到 39bit 地址投影后条件判断漂移。 | 只有非零时才出现在 summary。 |
+| `auto_mask` | 在 39bit VA 管线中，对仍携带高位的地址或间接分支目标清掉 `[63:39]`，补齐地址投影后的执行条件。 | 只有非零时才出现在 summary。 |
+| `other` | 归纳中间流程或诊断流程里的临时补偿类型。 | 正常最终 ELF 通常不应关注这一项；看到非零值时应结合日志定位来源。 |
+
+生成出来的补偿代码会放在 `.bp.runtime.stub.<kind>.*` 这类 section 中，运行时表放在对应的
+runtime table section 中。map 用这些 section/stub 名称描述 patch site、stub 位置、动态实例数量
+和补偿指令数；日志里的 `initial/svc/mrs/ldst/final_pc/exclusive/...` 则是便于快速判断补偿开销
+来源的汇总视图。
 
 ## 39-bit VA 切片功能
 
@@ -355,9 +390,11 @@ ELF，并额外生成 39-bit 版本的 ELF。需要注意的是，当前地址�
 
 未开启 `--to39bit` 时，默认生成普通 48-bit VA 切片，并输出
 `-48bit-orr.elf` 和 `-48bit-brk.elf` 两个变体；开启后还会额外输出
-`-39bit-orr.elf`、`-39bit-brk.elf` 以及对应的 map。`-orr.elf` 在
-finish site 使用单条 `orr x4, x4, x4` marker，`-brk.elf` 使用单条
-`brk #0` 作为本地执行/runner 的完成信号。
+`-39bit-orr.elf`、`-39bit-brk.elf`、`-39bit-nofinal.elf` 以及对应的 map。
+其中 `-39bit-orr.elf` 和 `-39bit-brk.elf` 来自同一份 final PC / compensation
+plan，只在结束信号上不同；`-39bit-nofinal.elf` 不插入 final PC 补偿代码，
+用于由模拟器按指令数截断的运行方式。`-orr.elf` 在 finish site 使用单条
+`orr x4, x4, x4` marker，`-brk.elf` 使用单条 `brk #0` 作为本地执行/runner 的完成信号。
 该功能仍属于实验特性；遇到回放差异时，优先用同次生成的普通 48-bit ELF 确认
 trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额外留下用于验证的
 `-39bit-probe_map.txt`、`-39bit-tagprobe-*_map.txt` 等中间 map 文件。
@@ -375,15 +412,17 @@ trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额�
 <output-dir>/binprofiler-trace-<pid>-<tid>-48bit-brk_map.txt
 <output-dir>/binprofiler-trace-<pid>-<tid>-39bit-orr.elf
 <output-dir>/binprofiler-trace-<pid>-<tid>-39bit-brk.elf
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-nofinal.elf
 <output-dir>/binprofiler-trace-<pid>-<tid>-39bit-orr_map.txt
 <output-dir>/binprofiler-trace-<pid>-<tid>-39bit-brk_map.txt
+<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-nofinal_map.txt
 <output-dir>/host.log
 ```
 
 是否生成 `.bptf` 和 `.elf` 取决于是否启用了 `--emit-trace` 和 `--emit-elf`。
 未开启 `--to39bit` 时只生成 `-48bit-orr.elf` 和 `-48bit-brk.elf`；
-开启 `--to39bit` 时还会生成 `-39bit-orr.elf` 和 `-39bit-brk.elf`。
-各 ELF 会生成对应的 `_map.txt` 文件。
+开启 `--to39bit` 时还会生成 `-39bit-orr.elf`、`-39bit-brk.elf` 和
+`-39bit-nofinal.elf`。各 ELF 会生成对应的 `_map.txt` 文件。
 
 各类文件的用途可以按下面理解：
 
@@ -396,6 +435,8 @@ trace 本身是否可正常生成和运行。39-bit 生成过程中可能会额�
   finish marker，便于模拟器识别切片执行结束。
 - `-brk.elf`：面向真机或普通 Linux 环境运行的切片 ELF。结束位置使用 `brk #0`
   触发 `SIGTRAP`，方便本地 runner 或调试器判断执行完成。
+- `-39bit-nofinal.elf`：39-bit VA 管线额外生成的无 final PC 补偿版本，不插入结束点补偿代码；
+  只能在模拟器上运行，依赖模拟器靠总指令数结束运行。
 - `_map.txt`：对应 ELF 的地址映射说明，用来区分原始业务代码、补偿代码、
   finish stub、runtime 数据等区域。调试 replay 差异、统计补偿代码比例或在模拟器
   中标注不同代码区域时，优先参考这个文件。
