@@ -14,6 +14,7 @@ BinProfiler 是一个基于 Frida 的二进制插桩工具，用于性能分析�
 - [运行原理](#运行原理)
 - [Trace 功能说明](#trace-功能说明)
 - [Elfgen 功能说明](#elfgen-功能说明)
+- [指令数统计功能说明](#指令数统计功能说明)
 - [BPTF Trace 格式](#bptf-trace-格式)
 
 ## 运行原理
@@ -83,7 +84,9 @@ BinProfiler 是一个基于 Frida 的二进制插桩工具，用于性能分析�
 - `--emit-trace`：导出二进制 Trace 文件，格式见 BPTF 说明。
 - `--emit-elf`：Trace 成功后自动生成 ELF；普通 48-bit 路径会同时生成
   `-48bit-orr.elf` 和 `-48bit-brk.elf` 两个 finish terminator 变体
-- `--merge-elf`：合并 segment，降低最终 ELF 的 segment 数量，提高真机加载成功率。
+- `--merge-elf`：合并 segment，降低最终 ELF 的 Program Header 数量，以满足 Linux 7.0
+  之前内核对 Program Header Table 大小不超过 4 KiB 的限制；Linux 7.0 及以上无需使用此选项。
+  可通过 `uname -r` 查看当前内核版本。
 - `--to39bit`：将 48-bit VA 环境采集的 Trace 转换为可在 39-bit VA 环境运行的切片，适用于模拟器；会额外生成
   `-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`（**开发中的实验特性**）
 
@@ -309,7 +312,8 @@ Vector Length 的系统调用。
   ./out/binprofiler-trace-12345-12345.bpraw \
   --to39bit
 
-# 3. 压低 segment 数量，使生成的 ELF 在真机运行
+# 3. 降低 Program Header 数量，以满足 Linux 7.0 之前内核对 Program Header Table
+#    大小不超过 4 KiB 的限制。
 ./binprofiler elfgen ./out/binprofiler-trace-12345-12345.bpraw \
   --merge-elf
 ```
@@ -319,7 +323,9 @@ Vector Length 的系统调用。
 
 - `--emit-trace`：在生成 ELF 的同时导出展开后的 `.bptf`
 - `--ignore-end-pc`：忽略 trace 里的 `end-pc` 标记，只按默认回退策略选择结束位置（**强烈不建议使用**）
-- `--merge-elf`：降低最终 ELF 的 segment 数量，使其更容易在真实环境加载运行
+- `--merge-elf`：合并 segment，降低最终 ELF 的 Program Header 数量，以满足 Linux 7.0
+  之前内核对 Program Header Table 大小不超过 4 KiB 的限制；Linux 7.0 及以上无需使用此选项。
+  可通过 `uname -r` 查看当前内核版本。
 - `--to39bit`：同时生成普通 48-bit VA 切片 ELF 和面向 39-bit VA 环境的切片 ELF；
   39-bit 输出包含 `-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`（**开发中的实验特性**）
 
@@ -433,6 +439,56 @@ Trace 本身能否正常生成和运行。39-bit 生成过程中还可能留下�
   调用 Elfgen 时，同一日志还会记录 Trace 的注入与采集信息。
 
 </details>
+
+## 指令数统计功能说明
+
+`trace --count-only` 不抓取 `.bpraw` trace，只统计指定 trigger PC 到 end PC
+之间的动态 AArch64 指令数。Gum 只发布 basic block 的起始 PC 和指令数，
+trigger/end 判断和计数在 consumer 线程完成。
+
+count-only 必须同时提供以下四个窗口参数：
+
+- `--trigger-pc <PC>`：计数起点 PC。可以使用运行时地址
+  `0x...`，也可以使用静态 ELF 地址 `MODULE:0xADDR`。
+- `--trigger-hit <N>`：第 `N` 次动态命中 trigger PC 后开始计数，默认 `1`。
+- `--end-pc <PC>`：计数终点 PC，地址格式与 `--trigger-pc` 相同。
+- `--end-hit <M>`：计数开始后第 `M` 次命中 end PC 时结束，默认 `1`。
+
+trigger 和 end 指令都计入结果；两个 PC 必须是 4-byte 对齐的 AArch64
+地址。未指定 `-p/--tid` 时统计目标主线程（Linux 上通常为 `tid == pid`）。
+
+count-only 的其他行为和限制：
+
+- 不使用 warmup，也不使用 instruction limit；显式传入
+  `--warmup-ms` 或 `--instruction-limit` 会报冲突，不会静默忽略。
+- `--end-hit` 只能和 `--count-only` 一起使用；普通 trace 传入会报冲突。
+- `--trace-jit` 可以保留，用于 Python、PyTorch 等 JIT 或自修改代码目标。
+- `--trigger-timeout-s` 仍只保护等待 trigger 的阶段，默认 `10` 秒，`0` 表示禁用。
+  第一版没有 end PC timeout；trigger 已命中但 end 长时间未命中时，需要由外部结束目标
+  进程和被注入的 agent 进程。
+- count-only 不产生 `.bpraw`，不能使用 `--emit-elf` 及其 ELF/context 选项。
+
+成功完成后，host 会在终端和 `<output-dir>/host.log` 输出类似以下结果：
+
+```text
+count-only finished: actual trigger pc=0xffff... hit=1 actual end pc=0xffff... hit=1 instructions=8926
+```
+
+一个常见用法是统计目标线程执行一段 PyTorch/原生代码窗口。下面的 PC 仅为示例，
+实际地址应从目标进程的符号、ELF 或 `/proc/<pid>/maps` 中取得：
+
+```sh
+./binprofiler trace <pid> \
+  --count-only \
+  --trigger-pc 0xffff12345000 \
+  --trigger-hit 1 \
+  --end-pc 0xffff12346000 \
+  --end-hit 1
+```
+
+如果目标线程不是主线程，补充 `--tid <tid>`；如果使用静态模块地址，可将 PC 写成
+`libfoo.so:0x12340`。命令完成后只读取 terminal/`host.log` 中的
+`instructions=<N>`，不会在输出目录留下 trace 文件。
 
 ## BPTF Trace 格式
 
