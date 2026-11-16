@@ -4,26 +4,59 @@ BinProfiler 是一个基于 Frida 的二进制插桩工具，用于性能分析�
 
 当前支持范围：
 
-| CPU ISA \\ OS | `Ubuntu 22.04+` | `OpenEuler 22.03+` |
+| CPU ISA \\ OS | `Ubuntu 22.04+` | `openEuler 22.03+` |
 | --- | --- | --- |
 | AArch64 | `trace`、`elfgen` | `trace`、`elfgen` |
-| x86_64 | - | - |
+| x86_64 | `elfgen` | `elfgen` |
 
 ## 目录
 
+- [下载与安装](#下载与安装)
+- [环境要求](#环境要求)
 - [运行原理](#运行原理)
 - [Trace 功能说明](#trace-功能说明)
 - [Elfgen 功能说明](#elfgen-功能说明)
 - [指令数统计功能说明](#指令数统计功能说明)
-- [BPTF Trace 格式](#bptf-trace-格式)
+- [常见问题与排查](#常见问题与排查)
+
+## 下载与安装
+
+从 [GitHub Releases](https://github.com/CILNext/BinProfiler-release/releases) 页面下载对应系统的压缩包，以及同版本的 sha256 校验文件：
+
+- `binprofiler-ubuntu-22.04-aarch64.tar.gz`（Ubuntu 22.04+）
+- `binprofiler-openeuler-22.03-aarch64.tar.gz`（openEuler 22.03+）
+- `binprofiler-vX.Y.Z-sha256.txt`（与压缩包放在同一目录，用于校验）
+
+```sh
+# 1. 校验压缩包。sha256 文件里列出了两个系统的包，
+#    --ignore-missing 表示只校验本次实际下载的压缩包。
+sha256sum -c --ignore-missing binprofiler-vX.Y.Z-sha256.txt
+
+# 2. 解压。注意：tar 包内没有顶层目录，直接解压会把文件释放到当前目录，
+#    建议先建一个单独目录。
+mkdir binprofiler-vX.Y.Z
+tar -xzf binprofiler-ubuntu-22.04-aarch64.tar.gz -C binprofiler-vX.Y.Z
+
+# 3. 确认包内包含两个文件
+ls binprofiler-vX.Y.Z
+# binprofiler  libbinprofiler-agent.so
+```
+
+`binprofiler` 默认从自身所在目录加载 `libbinprofiler-agent.so`，两个文件需放在同一目录；如需分离存放，用 `--agent` 指定路径（见 Trace 功能说明）。
+
+## 环境要求
+
+- **架构与系统**：见开头的支持范围表。`trace` 采集仅支持 AArch64（x86_64 构建不含 trace 模块，运行 `trace` 子命令会直接报错）；`elfgen` 也可在 x86_64 Linux 上离线运行。
+- **`trace` / 指令数统计**：需要对目标进程的 `ptrace` 附加权限；受 `ptrace_scope` 限制时的配置方法见[运行原理](#运行原理)。
+- **回放切片 ELF**：回放环境的 SVE Vector Length 需与采集环境一致（见 SVE Vector Length 说明）；若切片要在 Linux 7.0 之前的内核上运行，生成时需使用 `--merge-elf`（见 Elfgen 功能说明）。
 
 ## 运行原理
 
 `binprofiler` 负责附加到目标进程、注入 `agent`，并通过控制通道下发启动参数和任务请求；`agent` 常驻于目标进程内，执行采集并回传结果。
 
-在 Linux 上`agent`的注入依赖 `ptrace` 权限。如果本机启用了较严格的 `ptrace_scope` 限制，即使是同用户进程，也可能无法附加成功。
+在 Linux 上 `agent` 的注入依赖 `ptrace` 权限。如果本机启用了较严格的 `ptrace_scope` 限制，即使是同用户进程，也可能无法附加成功。
 
-使用前建议确认：
+使用 `trace` 采集前建议确认：
 
 - 当前用户对目标进程具备附加权限
 - 目标架构为 AArch64
@@ -58,13 +91,12 @@ BinProfiler 是一个基于 Frida 的二进制插桩工具，用于性能分析�
 ### 常见用法
 
 ```sh
-# Trace 成功后自动生成 ELF 和 BPTF。默认采集 5,000 万条指令，
+# Trace 成功后自动生成 ELF。默认采集 5,000 万条指令，
 # 并优先将指定的 End PC 作为切片结束位置。
 ./binprofiler --output-dir /tmp/binprofiler-replay trace 12345 \
   --trigger-pc 0x401000 \
   --end-pc 0x4019f0 \
-  --emit-elf \
-  --emit-trace
+  --emit-elf
 ```
 
 <details>
@@ -72,37 +104,33 @@ BinProfiler 是一个基于 Frida 的二进制插桩工具，用于性能分析�
 
 ### 选项说明
 
-- `--tid`：指定目标线程（默认是主线程）
-- `--instruction-limit`：限制采集指令数，默认 5,000 万条；实际数量会略高于该值。
+- `-p/--tid`：指定目标线程（默认是主线程）
+- `--instruction-limit`：限制采集指令数，默认 5,000 万条。实际数量会高于该值：停止按内部批次粒度进行，实测可能超出设定值 2 倍以上。
 - `--warmup-ms`：设置预热时间。初始翻译会将原始二进制转换为带插桩的代码，可能影响目标程序性能；预热期间不采集 Trace，以减少失真。默认值为 1 ms。
-- `--trigger-pc` / `--trigger-hit`：在指定 PC 第 N 次命中后开始录制，推荐用于精确控制 Trace 的采集窗口。
+- `--trigger-pc`（别名 `--start-pc`）/ `--trigger-hit`：在指定 PC 第 N 次命中后开始录制，推荐用于精确控制 Trace 的采集窗口。
 - `--trigger-timeout-s`：等待 Trigger PC 命中的最长时间，默认 10 s。
 - `--end-pc`：为 `elfgen` 提供优先的切片结束位置。若 End PC 位于热点循环中，会产生大量结束判断和补偿代码，可能影响切片代表性；建议选择大函数末尾等低频位置。
 - `--trace-context-sve`：记录 SVE 寄存器初始值，默认关闭；目标程序包含 SVE 指令时需要开启。
 - `--trace-context-neon`：记录 NEON/FP 寄存器初始值，默认开启；仅在确认目标程序只含标量指令时才可关闭。
 - `--trace-jit`：用于存在自修改行为的目标程序，例如 Python 程序；尚未充分验证。
-- `--emit-trace`：导出二进制 Trace 文件，格式见 BPTF 说明。
-- `--emit-elf`：Trace 成功后自动生成 ELF；普通 48-bit 路径会同时生成
-  `-48bit-orr.elf` 和 `-48bit-brk.elf` 两个 finish terminator 变体
-- `--merge-elf`：合并 segment，降低最终 ELF 的 Program Header 数量，以满足 Linux 7.0
-  之前内核对 Program Header Table 大小不超过 4 KiB 的限制；Linux 7.0 及以上无需使用此选项。
-  可通过 `uname -r` 查看当前内核版本。
-- `--to39bit`：将 48-bit VA 环境采集的 Trace 转换为可在 39-bit VA 环境运行的切片，适用于模拟器；会额外生成
-  `-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`（**开发中的实验特性**）
+- `--emit-elf`：Trace 成功后自动生成 ELF；产物在 `48bit/` 目录下，含 `orr` / `brk` /
+  `nofinal` 三个变体（见 Elfgen 输出文件说明）
+- `--merge-elf`：Trace 成功后自动调用 `elfgen` 时生效，额外生成合并 PT_LOAD 变体
+  （`48bit-merge/`）；完整说明见 [Elfgen 功能说明](#elfgen-功能说明)的选项说明
+- `--gen39bit`：Trace 成功后自动调用 `elfgen` 时，在 48-bit 产物之外额外生成 39-bit VA
+  切片（`39bit/` 目录）（**开发中的实验特性**）；完整说明见 [Elfgen 功能说明](#elfgen-功能说明)
 
 ### Trace 输出文件
 
-Trace 成功后会生成原始 `.bpraw` 和 `host.log`；开启 `--emit-trace` 后还会导出展开后的 `.bptf`。文件名规则如下：
+Trace 成功后会生成原始 `.bpraw` 和 `host.log`。文件名规则如下：
 
 ```text
 <output-dir>/binprofiler-trace-<pid>-<tid>.bpraw
-<output-dir>/binprofiler-trace-<pid>-<tid>.bptf
 <output-dir>/host.log
 ```
 
 - `.bpraw`：原始 Trace 文件，包含 catalog、动态执行记录、内存 payload 和必要的 context 信息，是后续 `elfgen` 的主要输入。
-- `.bptf`：由 `.bpraw` 展开的指令与内存事件流，便于 diff、校验和离线分析；通常明显大于 `.bpraw`，建议仅在排查问题、对比 Trace 或进行离线分析时生成。
-- `host.log`：本次 Trace 的主机侧日志，包含参数、`agent` 注入过程、实际解析出的trigger/end PC、输出文件路径和错误信息。
+- `host.log`：本次 Trace 的主机侧日志，包含参数、`agent` 注入过程、实际解析出的 trigger/end PC、输出文件路径和错误信息。
 
 启用 `--emit-elf` 时，Trace 会在成功后自动调用 Elfgen；生成的 ELF 和 map 文件见下方 Elfgen 输出说明。
 
@@ -310,10 +338,9 @@ Vector Length 的系统调用。
 # 2. 生成 39-bit VA 切片
 ./binprofiler --output-dir /tmp/binprofiler-39bit elfgen \
   ./out/binprofiler-trace-12345-12345.bpraw \
-  --to39bit
+  --gen39bit
 
-# 3. 降低 Program Header 数量，以满足 Linux 7.0 之前内核对 Program Header Table
-#    大小不超过 4 KiB 的限制。
+# 3. 合并 segment，降低 Program Header 数量（适用条件见选项说明）。
 ./binprofiler elfgen ./out/binprofiler-trace-12345-12345.bpraw \
   --merge-elf
 ```
@@ -321,13 +348,17 @@ Vector Length 的系统调用。
 <details>
 <summary>选项说明</summary>
 
-- `--emit-trace`：在生成 ELF 的同时导出展开后的 `.bptf`
-- `--ignore-end-pc`：忽略 trace 里的 `end-pc` 标记，只按默认回退策略选择结束位置（**强烈不建议使用**）
-- `--merge-elf`：合并 segment，降低最终 ELF 的 Program Header 数量，以满足 Linux 7.0
-  之前内核对 Program Header Table 大小不超过 4 KiB 的限制；Linux 7.0 及以上无需使用此选项。
+- `--ignore-end-pc`：忽略 trace 里的 `end-pc` 标记，让 `elfgen` 只按 instruction-limit 回退策略选择结束位置（**强烈不建议使用**）
+- `--merge-elf`：额外生成一份合并 PT_LOAD 的变体，输出在 `48bit-merge/` 目录，与 `48bit/`
+  常规产物并存（合并 pass 的 PT_LOAD 目标数固定为 70）。用于满足 Linux 7.0 之前内核对
+  Program Header Table 大小不超过 4 KiB 的限制；Linux 7.0 及以上无需使用此选项。
   可通过 `uname -r` 查看当前内核版本。
-- `--to39bit`：同时生成普通 48-bit VA 切片 ELF 和面向 39-bit VA 环境的切片 ELF；
-  39-bit 输出包含 `-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`（**开发中的实验特性**）
+- `--gen39bit`：48-bit 发射完成后运行 39-bit 生成序列，产出 `39bit/` 目录；配合
+  `--merge-elf` 时另有 `39bit-merge/`（见下方 39-bit VA 切片功能）（**开发中的实验特性**；
+  旧名 `--to39bit` 已移除，传入会报未知选项）
+- `--strict-39bit-audit`：调试路径：39-bit 生成中每处无法证明的残差直接判失败，而不是插入兜底桩
+- `--compensate-dczva`：把 `DC ZVA` 替换为可移植的软件清零 store
+- `-q/--quiet`：抑制终端输出，`host.log` 仍完整记录
 
 </details>
 
@@ -339,47 +370,57 @@ Vector Length 的系统调用。
 要么会产生不应出现的外部副作用。补偿代码是 `elfgen` 额外插入的 runtime stub：它会根据
 `.bpraw` 中的上下文、内存事件和专用 payload 修正运行时状态，再跳回原始指令流或终止执行。
 
-补偿统计会出现在 `host.log` 里，例如：
+补偿统计会同时输出到终端与 `host.log`，例如：
 
 ```text
-compensation instructions by category={initial=... svc=... mrs=... ldst=... final_pc=... exclusive=...}
+48bit statistics: compensation instructions=938854 (240.01%) without finish compensation=45 (0.01%)
+48bit statistics details: base=899699 load=0 stxr-atomic=0 svc=0 mrs=0 finish=39117 init=38
 ```
 
-这些字段表示补偿 stub 生成并实际计入的指令量，含义如下：
+第一行是补偿指令总量（相对 trace 指令数的百分比）与扣除 finish 补偿后的数量；`details`
+行是分类明细，各字段表示该类补偿 stub 生成并实际计入的指令量：
 
 | 项 | 目的 | 备注 |
 | --- | --- | --- |
-| `initial` | 在 replay ELF 入口从 trace 的 initial context 恢复初始寄存器状态，包括 PC、SP、通用寄存器、NZCV、FPCR/FPSR，以及可选的 NEON/SVE 上下文。 | 通常每个 replay ELF 有一个，是进入 trace 指令流前的状态基线。 |
+| `base` | 全部补偿桩共享的机构成本：帧保存/恢复、scratch 寄存器、回跳，以及 occurrence 检查机制（游走、select、游标比较、条目路由）等。 | 刻意按单数聚合，不按族细分。 |
+| `init` | 在 replay ELF 入口从 trace 的 initial context 恢复初始寄存器状态，包括 PC、SP、通用寄存器、NZCV、FPCR/FPSR，以及可选的 NEON/SVE 上下文。 | 通常每个 replay ELF 有一个，是进入 trace 指令流前的状态基线。 |
 | `svc` | 避免重新执行可能产生外部副作用或上下文依赖的 `svc`；改为从 runtime table 选择该动态实例的 context snapshot，恢复后跳到记录的后继 PC。 | `restore_context` 也归入 `svc` 统计，用于部分 SVE first-fault / no-fault load 等需要完整上下文恢复的场景。 |
 | `mrs` | 避免重新读取 replay 时可能变化的系统寄存器；改为把 trace 捕获到的读值写回目标寄存器。 | 常见于计数器、状态寄存器等系统寄存器读值。 |
-| `ldst` | 修正普通 load/store、atomic/LSE、`DC ZVA` 等内存效果；在原始内存指令前后补齐 trace 中记录的内存值、地址、scratch 寄存器或 zero range。 | 这里对应常规 memory 补偿路径；如果 shadow memory 已能证明直接重放安全，可能不会生成对应补偿。 |
-| `exclusive` | 修正 exclusive load/store 序列，保证 store-exclusive 的成功/失败结果和必要的内存副作用与 trace 一致。 | 只有非零时才出现在 summary。 |
-| `final_pc` | 标记 replay 应该停止的动态位置。 | 普通 48bit 和 39bit 双 variant 共享同一份 final PC 选择；`-orr.elf` 和 `-brk.elf` 只是使用不同的结束信号。39-bit nofinal 版本不插入这类结束点补偿代码。 |
-| `conditional_control` | 在 39bit VA 管线中强制采用 trace 记录的条件分支方向和后继 PC，避免 48bit 到 39bit 地址投影后条件判断漂移。 | 只有非零时才出现在 summary。 |
+| `load` | 普通内存指令补偿的数据面成本：读取记录/条目值并写出交付值，覆盖 load 值回填、store 效果修正、`DC ZVA` zero range 等。 | 如果 shadow memory 已能证明直接重放安全，可能不会生成对应补偿。 |
+| `stxr-atomic` | 修正 exclusive load/store 与 atomic/LSE 序列，保证 store-exclusive 的成功/失败结果和必要的内存副作用与 trace 一致。 | 对应旧版统计中的 `exclusive`。 |
+| `finish` | 标记 replay 应该停止的动态位置（final PC）的结束判断与补偿代码。 | `orr` / `brk` 两个变体共享同一份 final PC 选择，只是结束信号不同；`nofinal` 变体不插入这部分。 |
+| `dczva` | 把 `DC ZVA` 替换为可移植的软件清零 store。 | 仅开启 `--compensate-dczva` 时该字段出现（关闭时整个字段省略）。 |
 
-生成的补偿代码位于 `.bp.runtime.stub.<kind>.*` 等 section，运行时表位于对应的
-runtime table section。map 通过这些 section/stub 名称描述 patch site、stub 位置、动态实例数量
-和补偿指令数；日志中的 `initial/svc/mrs/ldst/final_pc/exclusive/...` 则提供补偿开销来源的汇总视图。
+`details` 行按固定字段顺序全显式（零值不省略），各分类之和与补偿指令总量守恒。
+39-bit 管线的 `details` 行额外包含 `address`、`cond`、`indirect` 三个字段，对应
+39-bit 地址投影与控制流方向的补偿。
+
+生成的 ELF 不含 section header；各代码区域改由对应的 `_map.txt` 描述：`original-code`
+（原始业务代码）、`stub-0x...`（补偿桩）、`init-stub`（入口初始化）、`runtime`（运行时表）、
+`literal-*`（literal 岛）、`mem`（数据区）、`private-stack`（私有栈）。调试 replay 差异或
+统计补偿占比时，结合 map 区域与上述统计查看。
 
 </details>
 
 <details>
 <summary>39-bit VA 切片功能</summary>
 
-`--to39bit` 用于将 48-bit VA Linux 环境采集的 `.bpraw` Trace 转换为可在 39-bit VA
-环境运行的切片 ELF，主要面向虚拟地址宽度受限的模拟器回放场景。启用后，`elfgen` 会建立
-48-bit 到 39-bit 的地址映射，并据此重写 Trace 中的 PC、SP、内存访问地址及可识别的指针来源；
-同时保留普通 48-bit VA baseline ELF，并额外生成 39-bit ELF。当前地址映射采用高位清零的
-投影方式：若多个 48-bit 地址清零后落入同一 39-bit 地址，暂时无法自动消解该冲突。
+`--gen39bit` 用于将 48-bit VA Linux 环境采集的 `.bpraw` Trace 转换为可在 39-bit VA
+环境运行的切片 ELF，主要面向虚拟地址宽度受限的模拟器回放场景。`elfgen` 会建立 48-bit 到
+39-bit 的地址映射（按高位截断投影），并据此重写 Trace 中的 PC、SP、内存访问地址及可识别的
+指针来源；常规 48-bit 产物照常生成在 `48bit/`，39-bit 产物额外写入 `39bit/`（变体与 map
+规则和 48-bit 相同），配合 `--merge-elf` 时另有 `39bit-merge/`。对无法完全证明的残差，
+默认插入兜底桩保证正确性；调试时可加 `--strict-39bit-audit`，让每处残差直接判失败而不是
+插桩，便于定位问题。
 
-可在 Trace 成功后自动生成 48-bit 和 39-bit 两份 ELF：
+可在 Trace 成功后一次性生成 48-bit 和 39-bit 两套 ELF：
 
 ```sh
 ./binprofiler --output-dir /tmp/binprofiler-39bit trace 12345 \
   --trigger-pc 0x401000 \
   --end-pc 0x4019f0 \
   --emit-elf \
-  --to39bit
+  --gen39bit
 ```
 
 也可针对已有 `.bpraw` 单独执行 `elfgen`：
@@ -387,56 +428,46 @@ runtime table section。map 通过这些 section/stub 名称描述 patch site、
 ```sh
 ./binprofiler --output-dir /tmp/binprofiler-39bit elfgen \
   ./out/binprofiler-trace-12345-12345.bpraw \
-  --to39bit
+  --gen39bit
 ```
 
 该功能仍属于实验特性。若出现回放差异，优先使用同次生成的普通 48-bit ELF 确认
-Trace 本身能否正常生成和运行。39-bit 生成过程中还可能留下用于验证的
-`-39bit-probe_map.txt`、`-39bit-tagprobe-*_map.txt` 等中间 map 文件。
+Trace 本身能否正常生成和运行，再排查 39-bit 投影引入的差异；`host.log` 中 39-bit 统计的
+`address` / `cond` / `indirect` 补偿量可作参考。
 
 </details>
 
 <details>
 <summary>Elfgen 输出文件</summary>
 
-`elfgen` 会生成切片 ELF 及其对应的 map 文件；开启 `--emit-trace` 时还会导出 `.bptf`。
+`elfgen` 把切片 ELF 及其对应的 map 文件按生成路径写入输出目录的子目录。
 当 Trace 使用 `--emit-elf` 自动调用 Elfgen 时，产物也遵循相同规则：
 
 ```text
-<output-dir>/binprofiler-trace-<pid>-<tid>.bptf
-<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-orr.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-brk.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-orr_map.txt
-<output-dir>/binprofiler-trace-<pid>-<tid>-48bit-brk_map.txt
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-orr.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-brk.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-nofinal.elf
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-orr_map.txt
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-brk_map.txt
-<output-dir>/binprofiler-trace-<pid>-<tid>-39bit-nofinal_map.txt
+<output-dir>/48bit/binprofiler-trace-<pid>-<tid>-orr.elf
+<output-dir>/48bit/binprofiler-trace-<pid>-<tid>-brk.elf
+<output-dir>/48bit/binprofiler-trace-<pid>-<tid>-nofinal.elf
+<output-dir>/48bit/binprofiler-trace-<pid>-<tid>-orr_map.txt
+<output-dir>/48bit/binprofiler-trace-<pid>-<tid>-brk_map.txt
+<output-dir>/48bit/binprofiler-trace-<pid>-<tid>-nofinal_map.txt
 <output-dir>/host.log
 ```
 
-未开启 `--to39bit` 时只生成 `-48bit-orr.elf` 和 `-48bit-brk.elf`；开启后还会生成
-`-39bit-orr.elf`、`-39bit-brk.elf` 和 `-39bit-nofinal.elf`。各 ELF 会生成对应的
-`_map.txt` 文件。
-
-`-39bit-orr.elf` 和 `-39bit-brk.elf` 来自同一份 final PC / compensation plan，
-只在结束信号上不同。
-
-- `.bptf`：仅在开启 `--emit-trace` 时生成；与 Trace 命令生成的 `.bptf` 格式相同，
-  用于 diff、校验和离线分析。
+- 默认生成 48-bit 切片，位于 `48bit/`；开启 `--merge-elf` 后额外生成合并 PT_LOAD
+  变体，位于 `48bit-merge/`，文件名相同。
+- 39-bit 生成序列（`--gen39bit`）的产物位于 `39bit/`，配合 `--merge-elf` 时另有
+  `39bit-merge/`，见下方 39-bit VA 切片功能。
 - `-orr.elf`：面向模拟器使用的切片 ELF。结束位置使用 `orr x4, x4, x4` 作为
   finish marker，便于模拟器识别切片执行结束。
 - `-brk.elf`：面向真机或普通 Linux 环境运行的切片 ELF。结束位置使用 `brk #0`
   触发 `SIGTRAP`，方便本地 runner 或调试器判断执行完成。
-- `-39bit-nofinal.elf`：39-bit VA 管线额外生成的无 final PC 补偿版本，不插入结束点补偿代码；
-  只能在模拟器上运行，依赖模拟器靠总指令数结束运行。
-- `_map.txt`：对应 ELF 的地址映射说明，用来区分原始业务代码、补偿代码、
-  finish stub、runtime 数据等区域。调试 replay 差异、统计补偿代码比例或在模拟器
-  中标注不同代码区域时，优先参考这个文件。
-- `host.log`：本次 `elfgen` 的主机侧日志，包含参数、输出文件路径和错误信息；Trace 自动
-  调用 Elfgen 时，同一日志还会记录 Trace 的注入与采集信息。
+- `-nofinal.elf`：不插入 final PC 结束点补偿代码的版本；没有内置结束信号，
+  只能在模拟器上运行，由模拟器按总指令数截断执行。
+- `_map.txt`：对应 ELF 的地址映射说明，按区域标注原始业务代码、补偿桩、初始化
+  stub、runtime 数据等。调试 replay 差异、统计补偿代码比例或在模拟器中标注不同
+  代码区域时，优先参考这个文件。
+- `host.log`：本次 `elfgen` 的主机侧日志，包含参数、补偿统计、输出文件路径和错误信息；
+  Trace 自动调用 Elfgen 时，同一日志还会记录 Trace 的注入与采集信息。
 
 </details>
 
@@ -446,7 +477,7 @@ Trace 本身能否正常生成和运行。39-bit 生成过程中还可能留下�
 之间的动态 AArch64 指令数。Gum 只发布 basic block 的起始 PC 和指令数，
 trigger/end 判断和计数在 consumer 线程完成。
 
-count-only 必须同时提供以下四个窗口参数：
+count-only 要求同时指定 `--trigger-pc` 与 `--end-pc`（缺一会直接报错）；`--trigger-hit` 与 `--end-hit` 可省略，默认 `1`。窗口参数如下：
 
 - `--trigger-pc <PC>`：计数起点 PC。可以使用运行时地址
   `0x...`，也可以使用静态 ELF 地址 `MODULE:0xADDR`。
@@ -490,152 +521,20 @@ count-only finished: actual trigger pc=0xffff... hit=1 actual end pc=0xffff... h
 `libfoo.so:0x12340`。命令完成后只读取 terminal/`host.log` 中的
 `instructions=<N>`，不会在输出目录留下 trace 文件。
 
-## BPTF Trace 格式
+## 常见问题与排查
 
-<details>
-<summary>BPTF 二进制格式规范</summary>
+**附加目标进程失败或无权限**
 
-`.bptf` 是由 `.bpraw` 展开的二进制指令流格式，可用于 diff、回放校验和离线分析。
-它不是原始捕获格式，完整元数据仍以 `.bpraw` 为准。
+通常是 `ptrace_scope` 限制导致，配置方法见[运行原理](#运行原理)；共享机器上建议采集结束后恢复原值。
 
-当前实现采用小端紧凑二进制布局，文件按以下顺序由三部分组成：
+**Trigger / End PC 不命中**
 
-```text
-RawBptfHeader
-RawBptfInstRecord[inst_count]
-RawBptfMemRecord[mem_count]
-```
+裸 `0xADDR` 会被当作动态运行时 PC；目标程序启用 PIE/ASLR 时，静态地址与运行时地址不一致也会导致不命中。优先使用 `MODULE:0xADDR` 写法，详见 Trace 功能说明中的 Trigger PC 与 End PC 设置。
 
-各部分含义如下：
+**切片 ELF 运行失败，或行为与采集时不一致**
 
-- 每条 `RawBptfInstRecord` 对应一条动态执行的指令
-- 如果该指令有关联的内存访问，则通过 `mem_index + mem_count` 指向连续的
-  `RawBptfMemRecord[]`
-- 当前版本对 NEON 和 SVE 内存指令的支持有限
-- 无效索引统一使用 `0xffffffff`
+先比对回放环境与采集环境的差异：SVE Vector Length、`vm.mmap_min_addr`、ASLR、ptrace 限制、OS/glibc 版本。回放环境的 SVE Vector Length 需与采集环境一致，否则切片可能无法正确回放。
 
-读取当前版本时，建议先校验以下固定条件；这些条件必须全部满足：
+**怀疑两台机器上的 BinProfiler 不是同一份二进制**
 
-```text
-magic == "BPTF"
-version == 1
-header_size == 80
-endian == 1            # little endian
-arch == 1              # AArch64
-inst_record_size == 32
-mem_record_size == 32
-inst_offset == 80
-mem_offset == inst_offset + inst_count * 32
-ext_data_offset == mem_offset + mem_count * 32
-ext_data_size == 0
-string_table_offset == ext_data_offset
-string_table_size == 0
-file_size == ext_data_offset
-```
-
-若任一条件不满足，应将文件视为非当前版本的 `.bptf` 并直接拒绝。
-
-当前落盘结构如下：
-
-```c
-struct RawBptfHeader {
-    uint32_t magic;               // 'BPTF'
-    uint16_t version;             // 当前为 1
-    uint16_t header_size;         // 当前为 80
-    uint16_t endian;              // 1 = little endian
-    uint16_t arch;                // 1 = AArch64
-    uint16_t inst_record_size;    // 当前为 32
-    uint16_t mem_record_size;     // 当前为 32
-    uint64_t inst_offset;         // 当前固定等于 sizeof(RawBptfHeader)
-    uint64_t inst_count;
-    uint64_t mem_offset;
-    uint64_t mem_count;
-    uint64_t ext_data_offset;     // 当前等于文件尾
-    uint64_t ext_data_size;       // 当前固定为 0
-    uint64_t string_table_offset; // 当前等于文件尾
-    uint64_t string_table_size;   // 当前固定为 0
-};
-
-struct RawBptfInstRecord {
-    uint64_t pc;                  // 指令 PC
-    uint32_t opcode;              // AArch64 32-bit opcode
-    uint32_t block_id;            // catalog block 序号
-    uint32_t op_index;            // block 内静态指令序号
-    uint32_t mem_index;           // 无内存访问时为 0xffffffff
-    uint16_t mem_count;           // 关联的内存记录数
-    uint16_t type;                // InstructionType
-    uint16_t flags;               // InstructionFlags bitmask
-    uint8_t inst_size;            // AArch64 当前通常为 4
-    uint8_t reserved;             // 当前保留为 0
-};
-
-struct RawBptfMemRecord {
-    uint64_t addr;                // 访问地址
-    uint64_t data_lo;             // 低 64-bit 数据
-    uint64_t data_hi;             // 高 64-bit 数据，<=8B 访问时通常为 0
-    uint16_t size;                // 本次访问字节数
-    uint8_t kind;                 // MemoryAccessKind
-    uint8_t flags;                // MemoryAccessFlags bitmask
-    uint32_t ext_offset;          // 当前固定为 0xffffffff
-};
-```
-
-若自行实现读取器，最小读取流程如下：
-
-```text
-1. 读取 RawBptfHeader，并校验固定值和 offset/size 关系
-2. 跳到 inst_offset，读取 inst_count 个 RawBptfInstRecord
-3. 跳到 mem_offset，读取 mem_count 个 RawBptfMemRecord
-4. 对每条 inst：
-   - 如果 mem_index != 0xffffffff
-   - 则 [mem_index, mem_index + mem_count) 这段连续 mem records
-   - 就是这条动态指令的内存行为
-```
-
-`type` / `kind` / `flags` 的当前取值约定：
-
-```c
-enum class InstructionType : uint16_t {
-    Unknown = 0,
-    Alu, Load, Store, Atomic, Branch, Call, Return,
-    Barrier, System, Runtime, Custom, Exit,
-};
-
-enum InstructionFlags : uint16_t {
-    InstructionFlagNone        = 0,
-    InstructionFlagTaken       = 1 << 0,
-    InstructionFlagRuntime     = 1 << 1,
-    InstructionFlagFault       = 1 << 2,
-    InstructionFlagExclusive   = 1 << 3,
-    InstructionFlagAtomic      = 1 << 4,
-    InstructionFlagVector      = 1 << 5,
-    InstructionFlagCustom      = 1 << 6,
-    InstructionFlagBrk0Exit    = 1 << 7,
-};
-
-enum class MemoryAccessKind : uint8_t {
-    Load = 1,
-    Store = 2,
-    Atomic = 3,
-};
-
-enum MemoryAccessFlags : uint8_t {
-    MemoryAccessFlagNone                   = 0,
-    MemoryAccessFlagExclusive              = 1 << 0,
-    MemoryAccessFlagSplit                  = 1 << 1,
-    MemoryAccessFlagUnaligned              = 1 << 2,
-    MemoryAccessFlagFailedStoreConditional = 1 << 3,
-    MemoryAccessFlagExtData                = 1 << 4,
-};
-```
-
-还需注意以下语义约定：
-
-- `block_id + op_index` 适合用作对齐不同 Trace 的主键，`pc` 主要用于定位和可读性
-- 一条指令可以关联多条内存记录，比如 pair、split、unaligned、atomic 等场景
-- `mem_count == 0` 时，`mem_index` 必为 `0xffffffff`
-- `mem_count != 0` 时，`mem_index` 表示 `RawBptfMemRecord[]` 的起始下标，不是字节 offset
-- `DC ZVA` 导出到 BPTF 时会展开成多条普通 `Store` 记录
-- 寄存器快照、context snapshot 和字符串元数据当前不单独落到 `.bptf`，这些信息仍保留在 `.bpraw`
-
-</details>
+先校验下载的 tar.gz sha256 与发布页校验文件是否一致，确认来自同一次发布；再用 `readelf -n binprofiler` 比对 Build ID。`binprofiler -V` 只能证明版本字符串一致，不能证明二进制来源一致。
