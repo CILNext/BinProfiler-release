@@ -356,7 +356,6 @@ Vector Length 的系统调用。
 - `--gen39bit`：48-bit 发射完成后运行 39-bit 生成序列，产出 `39bit/` 目录；配合
   `--merge-elf` 时另有 `39bit-merge/`（见下方 39-bit VA 切片功能）（**开发中的实验特性**；
   旧名 `--to39bit` 已移除，传入会报未知选项）
-- `--strict-39bit-audit`：调试路径：39-bit 生成中每处无法证明的残差直接判失败，而不是插入兜底桩
 - `--compensate-dczva`：把 `DC ZVA` 替换为可移植的软件清零 store
 - `-q/--quiet`：抑制终端输出，`host.log` 仍完整记录
 
@@ -410,8 +409,7 @@ Vector Length 的系统调用。
 39-bit 的地址映射（按高位截断投影），并据此重写 Trace 中的 PC、SP、内存访问地址及可识别的
 指针来源；常规 48-bit 产物照常生成在 `48bit/`，39-bit 产物额外写入 `39bit/`（变体与 map
 规则和 48-bit 相同），配合 `--merge-elf` 时另有 `39bit-merge/`。对无法完全证明的残差，
-默认插入兜底桩保证正确性；调试时可加 `--strict-39bit-audit`，让每处残差直接判失败而不是
-插桩，便于定位问题。
+默认插入兜底桩保证正确性。
 
 可在 Trace 成功后一次性生成 48-bit 和 39-bit 两套 ELF：
 
