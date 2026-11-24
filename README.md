@@ -394,7 +394,8 @@ Vector Length 的系统调用。
 39-bit 管线的 `details` 行额外包含 `address`、`cond`、`indirect` 三个字段，对应
 39-bit 地址投影与控制流方向的补偿。
 
-生成的 ELF 不含 section header；各代码区域改由对应的 `_map.txt` 描述：`original-code`
+生成的 ELF 带 section header table：每块内容对应一节，只有指令节带可执行标志，可直接用
+`objdump -d` 查看指令。各代码区域另由对应的 `_map.txt` 描述：`original-code`
 （原始业务代码）、`stub-0x...`（补偿桩）、`init-stub`（入口初始化）、`runtime`（运行时表）、
 `literal-*`（literal 岛）、`mem`（数据区）、`private-stack`（私有栈）。调试 replay 差异或
 统计补偿占比时，结合 map 区域与上述统计查看。
